@@ -1,2 +1,2 @@
 # Mpi_image_processing_with_communication_thread
-MPI-based image processing project analyzing performance gains from offloading communication to a dedicated thread. Separating computation and communication improves overlap, reduces idle time, and enhances overall throughput.
+An MPI-based image processing project that tests how using a dedicated communication thread affects performance. By handling computation and communication separately, it aims to reduce idle time and improve processing speed.
