@@ -1,14 +1,19 @@
+
 #include <stdio.h>
 #include <mpi.h>
 #include <stdlib.h>
 #include <math.h>
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
-// 13232
-#define TOTAL_IMAGES 2
 
-int local_reduce(int** image_arr, int num_images, int image_dimension, int* local_sum) {
-    for (int feature = 0; feature < image_dimension; feature++) {
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb_image_write.h"
+
+// 13232
+#define TOTAL_IMAGES 500
+
+int local_reduce(int** image_arr, int num_images, int num_dimensions, int* local_sum) {
+    for (int feature = 0; feature < num_dimensions; feature++) {
         for (int img = 0; img < num_images; img++) {
             local_sum[feature] += image_arr[img][feature];
         }
@@ -17,7 +22,7 @@ int local_reduce(int** image_arr, int num_images, int image_dimension, int* loca
     return 1;
 }
 
-int load_image_data(int size, int rank, int* num_images, int* image_dimension, int*** image_arr) {
+int load_image_data(int size, int rank, int* num_images, int* num_dimensions, int*** image_arr) {
 
     *num_images = TOTAL_IMAGES / size;
     if (rank == size - 1) {
@@ -46,9 +51,88 @@ int load_image_data(int size, int rank, int* num_images, int* image_dimension, i
         stbi_image_free(img);
     }
 
-    *image_dimension = width * height;
+    *num_dimensions = width * height;
     return 1;
 }
+
+int center_mean(int** image_arr, int* mean, int num_images, int num_dimensions) {
+    // fprintf(stderr, "num dim %d features %d", num_images, num_dimensions);
+    for (int img = 0; img < num_images; img++) {
+        for (int feature = 0; feature < num_dimensions; feature++) {
+            image_arr[img][feature] -= mean[feature];
+        }
+    }
+    return 1;
+}
+
+// m1 = m1 + m2
+int reduce_matrices(int dim, int* m1, int* m2) {
+    for (int i = 0; i < dim; i++) {
+        for (int j = 0; j < dim; j++) {
+            m1[i * dim + j] += m2[i * dim + j];
+        }
+    }
+    return 1;
+}
+
+int create_cov(int num_dimensions, int* local_cov, int* vec) {
+    for (int i = 0; i < num_dimensions; i++) {
+        for (int j = 0; j < num_dimensions; j++) {
+            local_cov[i * num_dimensions + j] = vec[i] * vec[j];
+        }
+    }
+    return 1;
+}
+
+int local_covariance_reduce(int num_dimensions, int* local_cov_sum, int** image_arr, int num_images) {
+    int* local_cov = (int*)malloc(num_dimensions * num_dimensions * sizeof(int));
+    if (!local_cov) return 0;
+    for (int img = 0; img < num_images; img++) {
+        create_cov(num_dimensions, local_cov, image_arr[img]);
+        reduce_matrices(num_dimensions, local_cov_sum, local_cov);
+    }
+    free(local_cov);
+    return 1;
+}
+
+
+int imageReconstruction(int* image_vector, int num_dimensions, int width, int height, int channels, const char* filename) {
+    // Implement the image reconstruction logic here
+    int quality = 90;
+    // first convert image_vector to unsigned char*
+    unsigned char* img = (unsigned char*)malloc(num_dimensions * sizeof(unsigned char));
+    for (int i = 0; i < num_dimensions; i++) {
+        img[i] = (unsigned char)image_vector[i];
+    }
+    if (!stbi_write_jpg(filename, width, height, channels, img, quality)) {
+        printf("Failed to write image\n");
+        free(img);
+        return 0; // failed
+    }
+    free(img);
+    return 1;
+}
+
+int writingReconstructedImages(int rank, int size, int num_images, int num_dimensions, int** image_arr, int width, int height, int channels) {
+    // Use provided dimensions and channels; no sample image needed
+
+    int start_index = rank * (TOTAL_IMAGES / size);
+    int end_index = start_index + num_images;
+    if (num_images <= 0) return 1; // nothing to write
+
+    for (int i = start_index; i < end_index; i++) {
+        int idx = i - start_index;
+        char out_name[128];
+        sprintf(out_name, "../Datasets/Reconstructed/reconstructed_%d.jpg", i);
+        if (!imageReconstruction(image_arr[idx], num_dimensions, width, height, channels, out_name)) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+
+
 
 int main(int argc, char** argv) {
     int rank, size;
@@ -58,34 +142,59 @@ int main(int argc, char** argv) {
     MPI_Comm_size(MPI_COMM_WORLD, &size);
 
     // Each process has a 2D array of images
-    int num_images, image_dimension;
+    int num_images, num_dimensions;
     int** image_arr;
-    if (!load_image_data(size, rank, &num_images, &image_dimension, &image_arr)) {
+    if (!load_image_data(size, rank, &num_images, &num_dimensions, &image_arr)) {
         MPI_Finalize();
         return 1;
     }
 
-    printf("Process %d loaded %d images with dimension %d\n", rank, num_images, image_dimension);
+    printf("Process %d loaded %d images with dimension %d\n", rank, num_images, num_dimensions);
 
-    int* local_sum = (int*)calloc(image_dimension, sizeof(int));
-    local_reduce(image_arr, num_images, image_dimension, local_sum);
+    int* local_sum = (int*)calloc(num_dimensions, sizeof(int));
+    local_reduce(image_arr, num_images, num_dimensions, local_sum);
 
-    int* total_sum = (int*)calloc(image_dimension, sizeof(int));
-    MPI_Allreduce(local_sum, total_sum, image_dimension, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+    int* total_sum = (int*)calloc(num_dimensions, sizeof(int));
+    MPI_Allreduce(local_sum, total_sum, num_dimensions, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
 
-    int* mean = (int*)malloc(image_dimension * sizeof(int));
-
-    // MPI_Barrier(MPI_COMM_WORLD);
-    // printf("Process %d computed mean for each feature.\n", rank);
+    int* mean = (int*)malloc(num_dimensions * sizeof(int));
     for (int i = 0; i < 10; i++) {
         mean[i] = total_sum[i] / TOTAL_IMAGES;
-        // printf("%d ", mean[i]);
     }
-    // printf("\n");
-    // MPI_Barrier(MPI_COMM_WORLD);
 
+    center_mean(image_arr, mean, num_images, num_dimensions);
 
+    // Allocate covariance matrix on heap using malloc (1D contiguous for MPI)
+    int* local_cov_sum = (int*)malloc((size_t)num_dimensions * num_dimensions * sizeof(int));
+    if (!local_cov_sum) {
+        fprintf(stderr, "Failed to allocate local_cov_sum\n");
+        MPI_Finalize();
+        return 1;
+    }
+    for (int i = 0; i < num_dimensions * num_dimensions; i++)
+        local_cov_sum[i] = 0;
 
+    local_covariance_reduce(num_dimensions, local_cov_sum, image_arr, num_images);
+
+    int* total_cov = (int*)malloc((size_t)num_dimensions * num_dimensions * sizeof(int));
+    if (!total_cov) {
+        fprintf(stderr, "Failed to allocate total_cov\n");
+        free(local_cov_sum);
+        MPI_Finalize();
+        return 1;
+    }
+    MPI_Allreduce(local_cov_sum, total_cov, num_dimensions * num_dimensions, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+
+    for (int i = 0; i < num_dimensions * num_dimensions; i++) {
+        total_cov[i] /= TOTAL_IMAGES;
+    }
+
+    // Cleanup
+    free(local_cov_sum);
+    free(total_cov);
+    free(mean);
+    free(local_sum);
+    free(total_sum);
 
     MPI_Finalize();
     return 0;
