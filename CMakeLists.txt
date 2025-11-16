@@ -39,6 +39,25 @@ target_link_libraries(eigen
   ${math_Lib}
 )
 
+add_executable("metrics" "./samples/metrics.c")
+target_link_libraries(metrics
+  ${openMpi_Lib}
+  ${LAPACKE_LIB}
+  ${LAPACK_LIB}
+  ${BLAS_LIB}
+  ${math_Lib}
+)
+
+add_executable("a" "./distributed_computing/main.c")
+target_link_libraries(a
+  ${openMpi_Lib}
+  ${LAPACKE_LIB}
+  ${LAPACK_LIB}
+  ${BLAS_LIB}
+  ${math_Lib}
+)
+
+
 
 
 

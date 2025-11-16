@@ -10,7 +10,7 @@
 #include "stb_image_write.h"
 
 // 13232
-#define TOTAL_IMAGES 500
+#define TOTAL_IMAGES 4000
 
 int local_reduce(int** image_arr, int num_images, int num_dimensions, int* local_sum) {
     for (int feature = 0; feature < num_dimensions; feature++) {
@@ -144,18 +144,26 @@ int main(int argc, char** argv) {
     // Each process has a 2D array of images
     int num_images, num_dimensions;
     int** image_arr;
+
+    double t_start_total = MPI_Wtime();
+
     if (!load_image_data(size, rank, &num_images, &num_dimensions, &image_arr)) {
         MPI_Finalize();
         return 1;
     }
+    double t_end_load = MPI_Wtime();
 
-    printf("Process %d loaded %d images with dimension %d\n", rank, num_images, num_dimensions);
-
+    // printf("Process %d loaded %d images with dimension %d\n", rank, num_images, num_dimensions);
+    double t_start_mean_local = MPI_Wtime();
     int* local_sum = (int*)calloc(num_dimensions, sizeof(int));
     local_reduce(image_arr, num_images, num_dimensions, local_sum);
 
     int* total_sum = (int*)calloc(num_dimensions, sizeof(int));
+    double t_end_mean_local = MPI_Wtime();
+
+    double t_start_mean_global = MPI_Wtime();
     MPI_Allreduce(local_sum, total_sum, num_dimensions, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+    double t_end_mean_global = MPI_Wtime();
 
     int* mean = (int*)malloc(num_dimensions * sizeof(int));
     for (int i = 0; i < 10; i++) {
@@ -165,6 +173,7 @@ int main(int argc, char** argv) {
     center_mean(image_arr, mean, num_images, num_dimensions);
 
     // Allocate covariance matrix on heap using malloc (1D contiguous for MPI)
+    double t_start_cov_local = MPI_Wtime(); 
     int* local_cov_sum = (int*)malloc((size_t)num_dimensions * num_dimensions * sizeof(int));
     if (!local_cov_sum) {
         fprintf(stderr, "Failed to allocate local_cov_sum\n");
@@ -175,6 +184,7 @@ int main(int argc, char** argv) {
         local_cov_sum[i] = 0;
 
     local_covariance_reduce(num_dimensions, local_cov_sum, image_arr, num_images);
+    double t_end_cov_local = MPI_Wtime();
 
     int* total_cov = (int*)malloc((size_t)num_dimensions * num_dimensions * sizeof(int));
     if (!total_cov) {
@@ -183,10 +193,21 @@ int main(int argc, char** argv) {
         MPI_Finalize();
         return 1;
     }
+
+    double t_start_cov_global = MPI_Wtime();
     MPI_Allreduce(local_cov_sum, total_cov, num_dimensions * num_dimensions, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+    double t_end_cov_global= MPI_Wtime();
 
     for (int i = 0; i < num_dimensions * num_dimensions; i++) {
         total_cov[i] /= TOTAL_IMAGES;
+    }
+    
+    if (rank == 0) {
+      printf("time to load images %f \n",t_end_load - t_start_total);
+      printf("time to local mean %f \n",t_end_mean_local - t_start_mean_local);
+      printf("time to gloabl mean %f \n",t_end_mean_global - t_start_mean_global);
+      printf("time to local cov %f \n",t_end_cov_local - t_start_cov_local);
+      printf("time to gloabl cov %f \n",t_end_cov_global - t_start_cov_global);
     }
 
     // Cleanup
