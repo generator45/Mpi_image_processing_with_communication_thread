@@ -10,8 +10,9 @@
 #include "stb_image_write.h"
 
 // 13232
-#define TOTAL_IMAGES 4000
-
+#ifndef TOTAL_IMAGES
+#define TOTAL_IMAGES 500
+#endif
 // Simple static timer utility.
 // Call record_time(0) to start, record_time(1) to stop & get elapsed seconds.
 // Returns 0.0 when starting, elapsed duration when stopping.
@@ -25,8 +26,8 @@ static inline double record_time(int stop) {
 }
 
 int local_reduce(int** image_arr, int num_images, int num_dimensions, int* local_sum) {
-    for (int feature = 0; feature < num_dimensions; feature++) {
-        for (int img = 0; img < num_images; img++) {
+    for (int img = 0; img < num_images; img++) {
+        for (int feature = 0; feature < num_dimensions; feature++) {
             local_sum[feature] += image_arr[img][feature];
         }
     }
@@ -104,6 +105,35 @@ int local_covariance_reduce(int num_dimensions, int* local_cov_sum, int** image_
         reduce_matrices(num_dimensions, local_cov_sum, local_cov);
     }
     free(local_cov);
+    return 1;
+}
+
+int local_covariance_compute(int* local_cov_sum, int** image_arr, int num_images, int num_dimensions) {
+    int** transpose = (int**)malloc(num_dimensions * sizeof(int*));
+    for (int i = 0; i < num_dimensions; i++) {
+        transpose[i] = (int*)malloc(num_images * sizeof(int));
+    }
+    // Fill transpose matrix
+    for (int i = 0; i < num_images; i++) {
+        for (int j = 0; j < num_dimensions; j++) {
+            transpose[j][i] = image_arr[i][j];
+        }
+    }
+
+    // Multiple transpose and image_arr
+    for (int i = 0; i < num_dimensions; i++) {
+        for (int k = 0; k < num_images; k++) {
+            for (int j = 0; j < num_dimensions; j++) {
+                local_cov_sum[i * num_dimensions + j] += transpose[i][k] * image_arr[k][j];
+            }
+        }
+    }
+
+    // Free transpose matrix
+    for (int i = 0; i < num_dimensions; i++) {
+        free(transpose[i]);
+    }
+    free(transpose);
     return 1;
 }
 
@@ -186,7 +216,7 @@ int main(int argc, char** argv) {
     // Allocate covariance matrix on heap using malloc (1D contiguous for MPI)
     // Local covariance accumulation
     record_time(0);
-    int* local_cov_sum = (int*)malloc((size_t)num_dimensions * num_dimensions * sizeof(int));
+    int* local_cov_sum = (int*)calloc(num_dimensions * num_dimensions, sizeof(int));
     if (!local_cov_sum) {
         fprintf(stderr, "Failed to allocate local_cov_sum\n");
         MPI_Finalize();
@@ -195,10 +225,11 @@ int main(int argc, char** argv) {
     for (int i = 0; i < num_dimensions * num_dimensions; i++)
         local_cov_sum[i] = 0;
 
-    local_covariance_reduce(num_dimensions, local_cov_sum, image_arr, num_images);
+    // local_covariance_reduce(num_dimensions, local_cov_sum, image_arr, num_images);
+    local_covariance_compute(local_cov_sum, image_arr, num_images, num_dimensions);
     double local_cov_elapsed = record_time(1);
 
-    int* total_cov = (int*)malloc((size_t)num_dimensions * num_dimensions * sizeof(int));
+    int* total_cov = (int*)malloc(num_dimensions * num_dimensions * sizeof(int));
     if (!total_cov) {
         fprintf(stderr, "Failed to allocate total_cov\n");
         free(local_cov_sum);
@@ -229,6 +260,7 @@ int main(int argc, char** argv) {
     free(mean);
     free(local_sum);
     free(total_sum);
+
 
     MPI_Finalize();
     return 0;
