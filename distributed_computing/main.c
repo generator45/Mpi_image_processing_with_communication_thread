@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <mpi.h>
 #include <stdlib.h>
+#include <lapacke.h>
 #include <math.h>
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
@@ -10,7 +11,7 @@
 #include "stb_image_write.h"
 
 // 13232
-#define TOTAL_IMAGES 4000
+#define TOTAL_IMAGES 500
 
 // Simple static timer utility.
 // Call record_time(0) to start, record_time(1) to stop & get elapsed seconds.
@@ -143,6 +144,28 @@ int writingReconstructedImages(int rank, int size, int num_images, int num_dimen
     return 1;
 }
 
+int reconstructImage () {
+    // for (int i = 0; i < d; i++) {
+    //     recon[i] = mean[i];
+    // for (int k = 0; k < K; k++) {
+    //  recon[i] += Vk[k*d + i] * y[k];
+    // }
+    // }
+    return 0;
+}
+
+int projectImage () {
+    // project (x - mean) onto top K eigenvectors
+    // for (int k = 0; k < K; k++) {
+    //     y[k] = 0;
+    //     for (int i = 0; i < d; i++) {
+    //         y[k] += Vk[k*d + i] * (x[i] - mean[i]);
+    //     }
+    // }
+    return 0;
+}
+
+
 
 
 
@@ -214,6 +237,36 @@ int main(int argc, char** argv) {
     for (int i = 0; i < num_dimensions * num_dimensions; i++) {
         total_cov[i] /= TOTAL_IMAGES;
     }
+    record_time(0);
+    int K = 256;
+    double* Vk = malloc((size_t)num_dimensions * K * sizeof(double));
+
+    if (rank == 0) {
+        double* total_cov_d = malloc((size_t)num_dimensions * num_dimensions * sizeof(double));
+        if (!total_cov_d) {
+            fprintf(stderr, "Failed to allocate total_cov_d\n");
+            MPI_Finalize();
+            return 1;
+        }
+        // Convert int -> double
+        for (int i = 0; i < num_dimensions * num_dimensions; i++) {
+            total_cov_d[i] = (double) total_cov[i];
+        }
+        double* eigenvalues = malloc(num_dimensions * sizeof(double));
+        int info = LAPACKE_dsyev(LAPACK_COL_MAJOR, 'V', 'U', num_dimensions, total_cov_d, num_dimensions, eigenvalues);
+
+        int start_col = num_dimensions - K;           // starting index for top-K PCs
+
+        for (int k = 0; k < K; k++) {
+            int src_col = start_col + k; // column in total_cov_d
+            // Copy this eigenvector column into Vk
+            memcpy(&Vk[k * num_dimensions],                   // destination start
+                   &total_cov_d[src_col * num_dimensions],    // source start (column-major)
+                   num_dimensions * sizeof(double));          // number of bytes
+        }
+    }
+    MPI_Bcast(Vk, num_dimensions * K, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    double eigen_vector_elapsed = record_time(1);
 
     if (rank == 0) {
         printf("time to load images %f \n", load_elapsed);
@@ -221,6 +274,7 @@ int main(int argc, char** argv) {
         printf("time to gloabl mean %f \n", global_mean_elapsed);
         printf("time to local cov %f \n", local_cov_elapsed);
         printf("time to gloabl cov %f \n", global_cov_elapsed);
+        printf("time to eigen_vector %f \n", eigen_vector_elapsed);
     }
 
     // Cleanup
